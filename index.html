@@ -1,0 +1,1256 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Dashboard monitoring kualitas air berbasis MQTT dan HiveMQ Cloud">
+  <title>Dashboard Monitoring Air Tahaikal</title>
+
+  <!-- Library eksternal. Tidak perlu npm atau proses build. -->
+  <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.4/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #f3f7fc;
+      --card: #ffffff;
+      --card-soft: #f8fbff;
+      --text: #172033;
+      --muted: #68758c;
+      --line: #dce5f1;
+      --primary: #1267d6;
+      --primary-dark: #0a4fae;
+      --good: #15834a;
+      --bad: #c83a3a;
+      --warning: #b76a00;
+      --shadow: 0 10px 30px rgba(31, 52, 91, 0.08);
+      --radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    button, input, select { font: inherit; }
+
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 750;
+      transition: transform .15s ease, opacity .15s ease, background .15s ease;
+    }
+
+    button:hover:not(:disabled) { transform: translateY(-1px); }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-dark); }
+    .btn-secondary { background: #eef4fb; color: var(--text); border: 1px solid var(--line); }
+    .btn-good { background: var(--good); color: #fff; }
+    .btn-danger { background: var(--bad); color: #fff; }
+
+    .page {
+      width: min(1420px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 24px 0 42px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    h1 { margin: 0; font-size: clamp(1.45rem, 3vw, 2rem); }
+    header p { margin: 6px 0 0; color: var(--muted); }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 9px 13px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--card);
+      box-shadow: var(--shadow);
+      white-space: nowrap;
+      font-weight: 800;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #8b96a8;
+    }
+
+    .dot.online { background: var(--good); box-shadow: 0 0 0 4px rgba(21,131,74,.13); }
+    .dot.connecting { background: var(--warning); box-shadow: 0 0 0 4px rgba(183,106,0,.13); }
+    .dot.error { background: var(--bad); box-shadow: 0 0 0 4px rgba(200,58,58,.13); }
+
+    .grid { display: grid; gap: 16px; }
+    .metrics { grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 16px; }
+    .main-grid { grid-template-columns: minmax(0, 2fr) minmax(310px, .85fr); margin-bottom: 16px; }
+    .lower-grid { grid-template-columns: minmax(0, 1.25fr) minmax(330px, .75fr); }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+      min-width: 0;
+    }
+
+    .metric-label { color: var(--muted); font-size: .9rem; font-weight: 750; margin-bottom: 10px; }
+    .metric-value { font-size: clamp(1.45rem, 3vw, 2.2rem); line-height: 1; font-weight: 850; }
+    .metric-unit { margin-left: 4px; color: var(--muted); font-size: .88rem; font-weight: 700; }
+
+    .quality {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 9px 14px;
+      min-height: 40px;
+      border-radius: 999px;
+      font-weight: 850;
+      background: #edf1f6;
+      color: var(--muted);
+    }
+
+    .quality.good { background: #e6f6ed; color: var(--good); }
+    .quality.bad { background: #fdecec; color: var(--bad); }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .section-title h2 { margin: 0; font-size: 1.05rem; }
+    .section-title small { color: var(--muted); }
+
+    .chart-wrap { position: relative; height: 330px; }
+    .chart-small { height: 220px; }
+
+    .tank {
+      position: relative;
+      width: min(180px, 70%);
+      height: 260px;
+      margin: 8px auto 18px;
+      border: 5px solid #45617f;
+      border-radius: 14px 14px 20px 20px;
+      overflow: hidden;
+      background: #f5f8fc;
+    }
+
+    .water {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 0%;
+      background: linear-gradient(180deg, #49b8ff, #177ed4);
+      transition: height .5s ease;
+    }
+
+    .water::before {
+      content: "";
+      position: absolute;
+      top: -7px;
+      left: -10%;
+      width: 120%;
+      height: 15px;
+      border-radius: 50%;
+      background: rgba(255,255,255,.36);
+    }
+
+    .tank-label {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      z-index: 2;
+      color: #14304d;
+      font-size: 1.7rem;
+      font-weight: 900;
+      text-shadow: 0 1px 4px rgba(255,255,255,.9);
+    }
+
+    .info-list { display: grid; gap: 10px; }
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px dashed var(--line);
+    }
+    .info-row:last-child { border-bottom: 0; }
+    .info-row span:first-child { color: var(--muted); }
+    .info-row strong { text-align: right; }
+
+    .controls { display: grid; gap: 12px; }
+    .control-group {
+      padding: 13px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--card-soft);
+    }
+
+    .control-group h3 { margin: 0 0 10px; font-size: .98rem; }
+    .button-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: .84rem;
+      font-weight: 750;
+    }
+
+    input, select {
+      width: 100%;
+      min-width: 0;
+      padding: 10px 11px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(18,103,214,.12);
+    }
+
+    .table-wrap {
+      overflow: auto;
+      max-height: 410px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 820px;
+      background: #fff;
+    }
+
+    th, td {
+      padding: 10px 11px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      font-size: .86rem;
+      white-space: nowrap;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #eef4fb;
+      color: #30415b;
+    }
+
+    .state-text.good { color: var(--good); font-weight: 850; }
+    .state-text.bad { color: var(--bad); font-weight: 850; }
+
+    .notice {
+      margin-top: 12px;
+      padding: 11px 12px;
+      border-left: 4px solid var(--warning);
+      border-radius: 8px;
+      background: #fff7e8;
+      color: #704400;
+      font-size: .84rem;
+      line-height: 1.45;
+    }
+
+    .connection-panel {
+      margin-bottom: 16px;
+    }
+
+    .connection-form {
+      display: grid;
+      grid-template-columns: 2fr .7fr 1.3fr 1.3fr 1fr 1fr;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .connection-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .message {
+      min-height: 20px;
+      margin-top: 10px;
+      font-size: .88rem;
+      color: var(--muted);
+    }
+
+    .message.error { color: var(--bad); }
+    .message.success { color: var(--good); }
+
+    footer {
+      margin-top: 18px;
+      color: var(--muted);
+      text-align: center;
+      font-size: .82rem;
+    }
+
+    @media (max-width: 1100px) {
+      .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .connection-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 820px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .main-grid, .lower-grid { grid-template-columns: 1fr; }
+      .connection-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 520px) {
+      .page { width: min(100% - 18px, 1420px); padding-top: 14px; }
+      .metrics, .connection-form, .form-grid { grid-template-columns: 1fr; }
+      .card { padding: 14px; }
+      .chart-wrap { height: 285px; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="page">
+    <header>
+      <div>
+        <h1>Dashboard Monitoring Air</h1>
+        <p>pH, TDS, ultrasonik, kualitas air, ketinggian, grafik, riwayat, dan kontrol pompa.</p>
+      </div>
+
+      <div class="status-pill">
+        <span id="connectionDot" class="dot"></span>
+        <span id="connectionText">Terputus</span>
+      </div>
+    </header>
+
+    <section class="card connection-panel">
+      <div class="section-title">
+        <h2>Koneksi otomatis HiveMQ Cloud</h2>
+        <small>Dashboard terhubung otomatis saat halaman dibuka</small>
+      </div>
+
+      <!-- Input disembunyikan agar fungsi dashboard yang sudah ada tetap dapat digunakan. -->
+      <input id="mqttHost" type="hidden">
+      <input id="mqttPort" type="hidden">
+      <input id="mqttUsername" type="hidden">
+      <input id="mqttPassword" type="hidden">
+      <input id="rootTopic" type="hidden">
+      <input id="deviceId" type="hidden">
+
+      <div class="connection-actions">
+        <button id="connectButton" class="btn-primary">Hubungkan Ulang</button>
+        <button id="disconnectButton" class="btn-secondary" disabled>Putuskan</button>
+        <button id="demoButton" class="btn-secondary">Mulai Demo</button>
+        <button id="saveConfigButton" style="display:none" aria-hidden="true">Simpan</button>
+      </div>
+
+      <div id="connectionMessage" class="message">
+        Menyiapkan koneksi otomatis ke HiveMQ Cloud...
+      </div>
+    </section>
+
+    <section class="grid metrics">
+      <article class="card">
+        <div class="metric-label">Nilai pH</div>
+        <div><span id="phValue" class="metric-value">--</span></div>
+      </article>
+
+      <article class="card">
+        <div class="metric-label">TDS</div>
+        <div><span id="tdsValue" class="metric-value">--</span><span class="metric-unit">ppm</span></div>
+      </article>
+
+      <article class="card">
+        <div class="metric-label">Jarak ultrasonik</div>
+        <div><span id="distanceValue" class="metric-value">--</span><span class="metric-unit">cm</span></div>
+      </article>
+
+      <article class="card">
+        <div class="metric-label">Ketinggian air</div>
+        <div><span id="levelValue" class="metric-value">--</span><span class="metric-unit">%</span></div>
+      </article>
+
+      <article class="card">
+        <div class="metric-label">Keputusan</div>
+        <div id="qualityBadge" class="quality">BELUM ADA DATA</div>
+      </article>
+    </section>
+
+    <section class="grid main-grid">
+      <article class="card">
+        <div class="section-title">
+          <h2>Grafik pengukuran</h2>
+          <small>Maksimal 30 data terbaru</small>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="sensorChart"></canvas>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="section-title">
+          <h2>Ketinggian tangki</h2>
+          <small>Hasil konversi jarak ultrasonik</small>
+        </div>
+
+        <div class="tank">
+          <div id="waterFill" class="water"></div>
+          <div id="tankLabel" class="tank-label">0%</div>
+        </div>
+
+        <div class="info-list">
+          <div class="info-row"><span>Status ESP32</span><strong id="deviceStatus">Tidak diketahui</strong></div>
+          <div class="info-row"><span>Mode</span><strong id="modeStatus">AUTO</strong></div>
+          <div class="info-row"><span>Pompa 1</span><strong id="pump1Status">OFF</strong></div>
+          <div class="info-row"><span>Pompa 2</span><strong id="pump2Status">OFF</strong></div>
+          <div class="info-row"><span>Data terakhir</span><strong id="lastUpdate">--</strong></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid lower-grid">
+      <article class="card">
+        <div class="section-title">
+          <h2>Riwayat pengukuran</h2>
+          <div class="button-row">
+            <button id="exportButton" class="btn-secondary">Ekspor CSV</button>
+            <button id="clearHistoryButton" class="btn-danger">Hapus Riwayat</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Waktu</th>
+                <th>pH</th>
+                <th>TDS</th>
+                <th>Jarak</th>
+                <th>Ketinggian</th>
+                <th>Keputusan</th>
+                <th>Pompa 1</th>
+                <th>Pompa 2</th>
+              </tr>
+            </thead>
+            <tbody id="historyBody">
+              <tr><td colspan="8">Belum ada data.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="section-title">
+          <h2>Kontrol dan pengaturan</h2>
+          <small>Perintah dikirim melalui MQTT</small>
+        </div>
+
+        <div class="controls">
+          <div class="control-group">
+            <h3>Mode sistem</h3>
+            <div class="button-row">
+              <button id="autoButton" class="btn-primary">AUTO</button>
+              <button id="manualButton" class="btn-secondary">MANUAL</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <h3>Pompa 1</h3>
+            <div class="button-row">
+              <button id="pump1OnButton" class="btn-good">ON</button>
+              <button id="pump1OffButton" class="btn-danger">OFF</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <h3>Pompa 2</h3>
+            <div class="button-row">
+              <button id="pump2OnButton" class="btn-good">ON</button>
+              <button id="pump2OffButton" class="btn-danger">OFF</button>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <h3>Kalibrasi tangki dan batas</h3>
+            <div class="form-grid">
+              <label>Jarak penuh (cm)<input id="fullDistance" type="number" step="0.1" value="5"></label>
+              <label>Jarak kosong (cm)<input id="emptyDistance" type="number" step="0.1" value="35"></label>
+              <label>Batas rendah (%)<input id="lowLevel" type="number" value="25"></label>
+              <label>Batas tinggi (%)<input id="highLevel" type="number" value="85"></label>
+              <label>pH minimum<input id="phMin" type="number" step="0.1" value="6.5"></label>
+              <label>pH maksimum<input id="phMax" type="number" step="0.1" value="8.5"></label>
+              <label>TDS maksimum baik<input id="tdsGoodMax" type="number" value="300"></label>
+              <label>Interval riwayat (detik)<input id="historyInterval" type="number" min="1" value="5"></label>
+            </div>
+
+            <div class="button-row" style="margin-top:12px">
+              <button id="applySettingsButton" class="btn-primary">Simpan Lokal</button>
+              <button id="sendSettingsButton" class="btn-secondary">Kirim ke ESP32</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="notice">
+          Mode otomatis dan pengaman pompa sebaiknya tetap dijalankan di ESP32. Dashboard hanya memantau dan mengirim perintah.
+          Password MQTT berada di browser selama halaman dibuka; batasi permission credential hanya ke topik perangkat ini.
+        </div>
+      </article>
+    </section>
+
+    <footer>
+      Dashboard satu file HTML — HiveMQ Cloud + GitHub + Vercel, tanpa Docker dan tanpa proses build.
+    </footer>
+  </div>
+
+  <script>
+    "use strict";
+
+    /*
+      ============================================================
+      KONFIGURASI HIVEMQ OTOMATIS
+      ============================================================
+      Ganti MQTT_HOST dan MQTT_PASSWORD sebelum upload ke GitHub.
+      Host ditulis tanpa https:// dan tanpa wss://.
+
+      PERINGATAN:
+      Karena dashboard hanya berupa HTML/JavaScript di browser,
+      password yang ditulis di sini dapat dilihat melalui source code
+      atau Developer Tools. Gunakan credential dashboard khusus dengan
+      permission terbatas hanya ke: tahaikal/device01/#
+    */
+    const AUTO_MQTT_CONFIG = Object.freeze({
+      host: "6e97312e16344652aaddfd835947cb0f.s1.eu.hivemq.cloud",
+      port: 8883,
+      username: "tahaikal",
+      password: "1sampai8",
+      rootTopic: "tahaikal",
+      deviceId: "device01",
+      autoConnect: true
+    });
+
+
+    const STORAGE_CONFIG = "tahaikal_dashboard_config_v2";
+    const STORAGE_HISTORY = "tahaikal_dashboard_history_v2";
+    const MAX_HISTORY = 500;
+    const MAX_CHART_POINTS = 30;
+
+    let mqttClient = null;
+    let demoTimer = null;
+    let lastHistoryAt = 0;
+    let latestData = {
+      ph: null,
+      tds: null,
+      distance: null,
+      level: null,
+      quality: "BELUM ADA DATA",
+      pump1: false,
+      pump2: false,
+      mode: "AUTO"
+    };
+
+    let historyData = loadJson(STORAGE_HISTORY, []);
+    if (!Array.isArray(historyData)) historyData = [];
+
+    const $ = (id) => document.getElementById(id);
+
+    const elements = {
+      host: $("mqttHost"),
+      port: $("mqttPort"),
+      username: $("mqttUsername"),
+      password: $("mqttPassword"),
+      rootTopic: $("rootTopic"),
+      deviceId: $("deviceId"),
+      connectButton: $("connectButton"),
+      disconnectButton: $("disconnectButton"),
+      demoButton: $("demoButton"),
+      saveConfigButton: $("saveConfigButton"),
+      connectionDot: $("connectionDot"),
+      connectionText: $("connectionText"),
+      connectionMessage: $("connectionMessage"),
+      phValue: $("phValue"),
+      tdsValue: $("tdsValue"),
+      distanceValue: $("distanceValue"),
+      levelValue: $("levelValue"),
+      qualityBadge: $("qualityBadge"),
+      waterFill: $("waterFill"),
+      tankLabel: $("tankLabel"),
+      deviceStatus: $("deviceStatus"),
+      modeStatus: $("modeStatus"),
+      pump1Status: $("pump1Status"),
+      pump2Status: $("pump2Status"),
+      lastUpdate: $("lastUpdate"),
+      historyBody: $("historyBody"),
+      fullDistance: $("fullDistance"),
+      emptyDistance: $("emptyDistance"),
+      lowLevel: $("lowLevel"),
+      highLevel: $("highLevel"),
+      phMin: $("phMin"),
+      phMax: $("phMax"),
+      tdsGoodMax: $("tdsGoodMax"),
+      historyInterval: $("historyInterval")
+    };
+
+    function loadJson(key, fallback) {
+      try {
+        const value = localStorage.getItem(key);
+        return value ? JSON.parse(value) : fallback;
+      } catch (error) {
+        console.warn("Gagal membaca localStorage:", error);
+        return fallback;
+      }
+    }
+
+    function saveJson(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch (error) {
+        console.warn("Gagal menyimpan localStorage:", error);
+      }
+    }
+
+    function numberValue(element, fallback) {
+      const value = Number(element.value);
+      return Number.isFinite(value) ? value : fallback;
+    }
+
+    function cleanText(value, fallback = "") {
+      const result = String(value ?? "").trim();
+      return result || fallback;
+    }
+
+    function automaticConfigIsReady() {
+      return (
+        AUTO_MQTT_CONFIG.host &&
+        AUTO_MQTT_CONFIG.password &&
+        !AUTO_MQTT_CONFIG.host.includes("GANTI_DENGAN") &&
+        !AUTO_MQTT_CONFIG.password.includes("GANTI_DENGAN")
+      );
+    }
+
+    function applyAutomaticMqttConfig() {
+      elements.host.value = AUTO_MQTT_CONFIG.host;
+      elements.port.value = AUTO_MQTT_CONFIG.port;
+      elements.username.value = AUTO_MQTT_CONFIG.username;
+      elements.password.value = AUTO_MQTT_CONFIG.password;
+      elements.rootTopic.value = AUTO_MQTT_CONFIG.rootTopic;
+      elements.deviceId.value = AUTO_MQTT_CONFIG.deviceId;
+    }
+
+    function getConfig() {
+      return {
+        host: cleanText(elements.host.value),
+        port: numberValue(elements.port, 8884),
+        username: cleanText(elements.username.value),
+        rootTopic: cleanText(elements.rootTopic.value, "tahaikal").replace(/^\/+|\/+$/g, ""),
+        deviceId: cleanText(elements.deviceId.value, "device01").replace(/^\/+|\/+$/g, ""),
+        fullDistance: numberValue(elements.fullDistance, 5),
+        emptyDistance: numberValue(elements.emptyDistance, 35),
+        lowLevel: numberValue(elements.lowLevel, 25),
+        highLevel: numberValue(elements.highLevel, 85),
+        phMin: numberValue(elements.phMin, 6.5),
+        phMax: numberValue(elements.phMax, 8.5),
+        tdsGoodMax: numberValue(elements.tdsGoodMax, 300),
+        historyInterval: Math.max(1, numberValue(elements.historyInterval, 5))
+      };
+    }
+
+    function saveConfig() {
+      const config = getConfig();
+      saveJson(STORAGE_CONFIG, config);
+      setMessage("Pengaturan tangki dan klasifikasi tersimpan di browser.", "success");
+    }
+
+    function restoreConfig() {
+      const config = loadJson(STORAGE_CONFIG, null);
+      if (!config) return;
+
+      elements.host.value = config.host ?? "";
+      elements.port.value = config.port ?? 8884;
+      elements.username.value = config.username ?? "dashboardtahaikal";
+      elements.rootTopic.value = config.rootTopic ?? "tahaikal";
+      elements.deviceId.value = config.deviceId ?? "device01";
+      elements.fullDistance.value = config.fullDistance ?? 5;
+      elements.emptyDistance.value = config.emptyDistance ?? 35;
+      elements.lowLevel.value = config.lowLevel ?? 25;
+      elements.highLevel.value = config.highLevel ?? 85;
+      elements.phMin.value = config.phMin ?? 6.5;
+      elements.phMax.value = config.phMax ?? 8.5;
+      elements.tdsGoodMax.value = config.tdsGoodMax ?? 300;
+      elements.historyInterval.value = config.historyInterval ?? 5;
+    }
+
+    function baseTopic() {
+      const config = getConfig();
+      return `${config.rootTopic}/${config.deviceId}`;
+    }
+
+    function setConnectionStatus(status, message) {
+      elements.connectionDot.className = "dot";
+      elements.connectionText.textContent = message;
+
+      if (status === "online") elements.connectionDot.classList.add("online");
+      if (status === "connecting") elements.connectionDot.classList.add("connecting");
+      if (status === "error") elements.connectionDot.classList.add("error");
+
+      const connected = status === "online";
+      elements.connectButton.disabled = connected || status === "connecting";
+      elements.disconnectButton.disabled = !connected;
+    }
+
+    function setMessage(message, type = "") {
+      elements.connectionMessage.textContent = message;
+      elements.connectionMessage.className = `message ${type}`.trim();
+    }
+
+    function calculateLevel(distance) {
+      const config = getConfig();
+      const full = config.fullDistance;
+      const empty = config.emptyDistance;
+
+      if (!Number.isFinite(distance) || empty <= full) return 0;
+      const level = ((empty - distance) / (empty - full)) * 100;
+      return Math.min(100, Math.max(0, level));
+    }
+
+    function classifyWater(ph, tds) {
+      const config = getConfig();
+      const valid = Number.isFinite(ph) && Number.isFinite(tds);
+      if (!valid) return "BELUM ADA DATA";
+
+      const phGood = ph >= config.phMin && ph <= config.phMax;
+      const tdsGood = tds < config.tdsGoodMax;
+      return phGood && tdsGood ? "BAIK" : "TIDAK BAIK";
+    }
+
+    function boolValue(value, fallback = false) {
+      if (typeof value === "boolean") return value;
+      if (typeof value === "number") return value !== 0;
+      if (typeof value === "string") {
+        const normalized = value.trim().toUpperCase();
+        if (["ON", "TRUE", "1", "NYALA"].includes(normalized)) return true;
+        if (["OFF", "FALSE", "0", "MATI"].includes(normalized)) return false;
+      }
+      return fallback;
+    }
+
+    function readNumber(payload, keys, fallback = null) {
+      for (const key of keys) {
+        if (payload[key] !== undefined && payload[key] !== null) {
+          const value = Number(payload[key]);
+          if (Number.isFinite(value)) return value;
+        }
+      }
+      return fallback;
+    }
+
+    function updateDashboard(data, addHistory = true) {
+      const ph = Number.isFinite(data.ph) ? data.ph : latestData.ph;
+      const tds = Number.isFinite(data.tds) ? data.tds : latestData.tds;
+      const distance = Number.isFinite(data.distance) ? data.distance : latestData.distance;
+      const level = Number.isFinite(data.level) ? data.level : calculateLevel(distance);
+      const quality = data.quality || classifyWater(ph, tds);
+      const pump1 = data.pump1 !== undefined ? boolValue(data.pump1, latestData.pump1) : latestData.pump1;
+      const pump2 = data.pump2 !== undefined ? boolValue(data.pump2, latestData.pump2) : latestData.pump2;
+      const mode = cleanText(data.mode, latestData.mode || "AUTO").toUpperCase();
+
+      latestData = { ph, tds, distance, level, quality, pump1, pump2, mode };
+
+      elements.phValue.textContent = Number.isFinite(ph) ? ph.toFixed(2) : "--";
+      elements.tdsValue.textContent = Number.isFinite(tds) ? Math.round(tds) : "--";
+      elements.distanceValue.textContent = Number.isFinite(distance) ? distance.toFixed(1) : "--";
+      elements.levelValue.textContent = Number.isFinite(level) ? level.toFixed(0) : "--";
+
+      elements.qualityBadge.textContent = quality;
+      elements.qualityBadge.className = "quality";
+      if (quality === "BAIK") elements.qualityBadge.classList.add("good");
+      if (quality === "TIDAK BAIK") elements.qualityBadge.classList.add("bad");
+
+      const safeLevel = Number.isFinite(level) ? Math.min(100, Math.max(0, level)) : 0;
+      elements.waterFill.style.height = `${safeLevel}%`;
+      elements.tankLabel.textContent = `${safeLevel.toFixed(0)}%`;
+
+      elements.modeStatus.textContent = mode;
+      elements.pump1Status.textContent = pump1 ? "ON" : "OFF";
+      elements.pump2Status.textContent = pump2 ? "ON" : "OFF";
+      elements.pump1Status.style.color = pump1 ? "var(--good)" : "var(--bad)";
+      elements.pump2Status.style.color = pump2 ? "var(--good)" : "var(--bad)";
+
+      const now = new Date();
+      elements.lastUpdate.textContent = now.toLocaleTimeString("id-ID");
+
+      addChartPoint({
+        label: now.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        ph,
+        tds,
+        distance,
+        level
+      });
+
+      if (addHistory) maybeAddHistory(now);
+    }
+
+    function maybeAddHistory(now) {
+      const intervalMs = getConfig().historyInterval * 1000;
+      if (now.getTime() - lastHistoryAt < intervalMs) return;
+      lastHistoryAt = now.getTime();
+
+      if (![latestData.ph, latestData.tds, latestData.distance].every(Number.isFinite)) return;
+
+      historyData.unshift({
+        time: now.toISOString(),
+        ph: latestData.ph,
+        tds: latestData.tds,
+        distance: latestData.distance,
+        level: latestData.level,
+        quality: latestData.quality,
+        pump1: latestData.pump1,
+        pump2: latestData.pump2
+      });
+
+      historyData = historyData.slice(0, MAX_HISTORY);
+      saveJson(STORAGE_HISTORY, historyData);
+      renderHistory();
+    }
+
+    function renderHistory() {
+      if (!historyData.length) {
+        elements.historyBody.innerHTML = '<tr><td colspan="8">Belum ada data.</td></tr>';
+        return;
+      }
+
+      elements.historyBody.innerHTML = historyData.map((row) => {
+        const date = new Date(row.time);
+        const qualityClass = row.quality === "BAIK" ? "good" : "bad";
+        return `
+          <tr>
+            <td>${date.toLocaleString("id-ID")}</td>
+            <td>${Number(row.ph).toFixed(2)}</td>
+            <td>${Math.round(Number(row.tds))} ppm</td>
+            <td>${Number(row.distance).toFixed(1)} cm</td>
+            <td>${Number(row.level).toFixed(0)}%</td>
+            <td class="state-text ${qualityClass}">${row.quality}</td>
+            <td>${row.pump1 ? "ON" : "OFF"}</td>
+            <td>${row.pump2 ? "ON" : "OFF"}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function exportCsv() {
+      if (!historyData.length) {
+        alert("Riwayat masih kosong.");
+        return;
+      }
+
+      const header = ["waktu", "ph", "tds_ppm", "jarak_cm", "ketinggian_persen", "keputusan", "pompa_1", "pompa_2"];
+      const rows = historyData.map((row) => [
+        row.time,
+        row.ph,
+        row.tds,
+        row.distance,
+        row.level,
+        row.quality,
+        row.pump1 ? "ON" : "OFF",
+        row.pump2 ? "ON" : "OFF"
+      ]);
+
+      const csv = [header, ...rows]
+        .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))
+        .join("\n");
+
+      const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `riwayat-air-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function clearHistory() {
+      if (!confirm("Hapus seluruh riwayat pengukuran di browser ini?")) return;
+      historyData = [];
+      saveJson(STORAGE_HISTORY, historyData);
+      renderHistory();
+    }
+
+    const chartContext = $("sensorChart").getContext("2d");
+    const sensorChart = new Chart(chartContext, {
+      type: "line",
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: "pH",
+            data: [],
+            yAxisID: "yPh",
+            tension: .3,
+            pointRadius: 2,
+            borderWidth: 2
+          },
+          {
+            label: "TDS (ppm)",
+            data: [],
+            yAxisID: "yMain",
+            tension: .3,
+            pointRadius: 2,
+            borderWidth: 2
+          },
+          {
+            label: "Jarak (cm)",
+            data: [],
+            yAxisID: "yMain",
+            tension: .3,
+            pointRadius: 2,
+            borderWidth: 2
+          },
+          {
+            label: "Ketinggian (%)",
+            data: [],
+            yAxisID: "yMain",
+            tension: .3,
+            pointRadius: 2,
+            borderWidth: 2
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        animation: false,
+        plugins: {
+          legend: { position: "bottom" }
+        },
+        scales: {
+          x: {
+            ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 8 },
+            grid: { display: false }
+          },
+          yPh: {
+            type: "linear",
+            position: "left",
+            min: 0,
+            max: 14,
+            title: { display: true, text: "pH" }
+          },
+          yMain: {
+            type: "linear",
+            position: "right",
+            beginAtZero: true,
+            grid: { drawOnChartArea: false },
+            title: { display: true, text: "TDS / jarak / ketinggian" }
+          }
+        }
+      }
+    });
+
+    function addChartPoint(point) {
+      sensorChart.data.labels.push(point.label);
+      sensorChart.data.datasets[0].data.push(point.ph);
+      sensorChart.data.datasets[1].data.push(point.tds);
+      sensorChart.data.datasets[2].data.push(point.distance);
+      sensorChart.data.datasets[3].data.push(point.level);
+
+      while (sensorChart.data.labels.length > MAX_CHART_POINTS) {
+        sensorChart.data.labels.shift();
+        sensorChart.data.datasets.forEach((dataset) => dataset.data.shift());
+      }
+
+      sensorChart.update();
+    }
+
+    function parseTelemetry(message) {
+      const payload = JSON.parse(message);
+      return {
+        ph: readNumber(payload, ["ph", "pH"]),
+        tds: readNumber(payload, ["tds", "TDS", "tds_ppm"]),
+        distance: readNumber(payload, ["distance", "jarak", "distance_cm"]),
+        level: readNumber(payload, ["level", "ketinggian", "level_percent"]),
+        quality: cleanText(payload.quality ?? payload.keputusan, ""),
+        pump1: payload.pump1 ?? payload.pompa1,
+        pump2: payload.pump2 ?? payload.pompa2,
+        mode: payload.mode
+      };
+    }
+
+    function connectMqtt() {
+      stopDemo();
+      applyAutomaticMqttConfig();
+
+      if (mqttClient) {
+        try { mqttClient.end(true); } catch (_) {}
+        mqttClient = null;
+      }
+
+      const config = getConfig();
+      const password = elements.password.value;
+
+      if (!automaticConfigIsReady()) {
+        setConnectionStatus("error", "Konfigurasi belum diisi");
+        setMessage(
+          "Edit AUTO_MQTT_CONFIG pada index.html: isi host HiveMQ dan password dashboard.",
+          "error"
+        );
+        return;
+      }
+
+      if (!config.host || !config.username || !password) {
+        setMessage("Konfigurasi MQTT otomatis belum lengkap.", "error");
+        return;
+      }
+
+      setConnectionStatus("connecting", "Menghubungkan...");
+      setMessage("Mencoba terhubung ke HiveMQ Cloud...");
+
+      const url = `wss://${config.host}:${config.port}/mqtt`;
+      const clientId = `dashboard-${config.deviceId}-${Math.random().toString(16).slice(2, 10)}`;
+
+      mqttClient = mqtt.connect(url, {
+        username: config.username,
+        password,
+        clientId,
+        clean: true,
+        connectTimeout: 10000,
+        reconnectPeriod: 4000,
+        keepalive: 30,
+        protocolVersion: 4
+      });
+
+      mqttClient.on("connect", () => {
+        setConnectionStatus("online", "Terhubung");
+        setMessage(`Terhubung ke ${url}`, "success");
+
+        const telemetryTopic = `${baseTopic()}/telemetry`;
+        const statusTopic = `${baseTopic()}/status`;
+
+        mqttClient.subscribe([telemetryTopic, statusTopic], { qos: 0 }, (error) => {
+          if (error) {
+            setMessage(`Gagal subscribe: ${error.message}`, "error");
+          } else {
+            setMessage(`Subscribe: ${telemetryTopic} dan ${statusTopic}`, "success");
+          }
+        });
+      });
+
+      mqttClient.on("message", (topic, buffer) => {
+        const message = buffer.toString();
+
+        if (topic.endsWith("/status")) {
+          elements.deviceStatus.textContent = message.trim().toLowerCase() === "online" ? "Online" : "Offline";
+          elements.deviceStatus.style.color = message.trim().toLowerCase() === "online" ? "var(--good)" : "var(--bad)";
+          return;
+        }
+
+        if (topic.endsWith("/telemetry")) {
+          try {
+            const telemetry = parseTelemetry(message);
+            elements.deviceStatus.textContent = "Online";
+            elements.deviceStatus.style.color = "var(--good)";
+            updateDashboard(telemetry, true);
+          } catch (error) {
+            setMessage(`Payload telemetry tidak valid: ${error.message}`, "error");
+          }
+        }
+      });
+
+      mqttClient.on("reconnect", () => {
+        setConnectionStatus("connecting", "Menyambung ulang...");
+      });
+
+      mqttClient.on("close", () => {
+        setConnectionStatus("offline", "Terputus");
+      });
+
+      mqttClient.on("error", (error) => {
+        setConnectionStatus("error", "Koneksi gagal");
+        setMessage(`Kesalahan MQTT: ${error.message}`, "error");
+      });
+    }
+
+    function disconnectMqtt() {
+      if (mqttClient) {
+        mqttClient.end(true);
+        mqttClient = null;
+      }
+      setConnectionStatus("offline", "Terputus");
+      setMessage("Koneksi MQTT diputus.");
+    }
+
+    function publishCommand(suffix, payload, retained = false) {
+      if (!mqttClient || !mqttClient.connected) {
+        setMessage("Dashboard belum terhubung ke HiveMQ.", "error");
+        return false;
+      }
+
+      const topic = `${baseTopic()}/${suffix}`;
+      mqttClient.publish(topic, String(payload), { qos: 0, retain: retained }, (error) => {
+        if (error) {
+          setMessage(`Gagal publish ke ${topic}: ${error.message}`, "error");
+        } else {
+          setMessage(`Terkirim: ${topic} → ${payload}`, "success");
+        }
+      });
+      return true;
+    }
+
+    function setMode(mode) {
+      if (publishCommand("control/mode/set", mode)) {
+        latestData.mode = mode;
+        elements.modeStatus.textContent = mode;
+      }
+    }
+
+    function setPump(pumpNumber, state) {
+      if (latestData.mode !== "MANUAL") {
+        setMessage("Pilih mode MANUAL sebelum mengontrol pompa.", "error");
+        return;
+      }
+
+      if (publishCommand(`control/pump${pumpNumber}/set`, state ? "ON" : "OFF")) {
+        latestData[`pump${pumpNumber}`] = state;
+        updateDashboard(latestData, false);
+      }
+    }
+
+    function sendSettings() {
+      const config = getConfig();
+      const payload = JSON.stringify({
+        tankFullDistance: config.fullDistance,
+        tankEmptyDistance: config.emptyDistance,
+        lowLevelPercent: config.lowLevel,
+        highLevelPercent: config.highLevel,
+        phMin: config.phMin,
+        phMax: config.phMax,
+        tdsGoodMax: config.tdsGoodMax
+      });
+
+      publishCommand("control/thresholds/set", payload, true);
+    }
+
+    function startDemo() {
+      disconnectMqtt();
+
+      if (demoTimer) {
+        stopDemo();
+        return;
+      }
+
+      elements.demoButton.textContent = "Hentikan Demo";
+      setConnectionStatus("online", "Mode demo");
+      elements.deviceStatus.textContent = "Demo";
+      elements.deviceStatus.style.color = "var(--warning)";
+
+      demoTimer = setInterval(() => {
+        const ph = 6.1 + Math.random() * 3;
+        const tds = 180 + Math.random() * 320;
+        const distance = 7 + Math.random() * 25;
+        const pump1 = Math.random() > .55;
+        const pump2 = Math.random() > .72;
+
+        updateDashboard({
+          ph,
+          tds,
+          distance,
+          pump1,
+          pump2,
+          mode: "AUTO"
+        }, true);
+      }, 2500);
+
+      demoTimer && updateDashboard({
+        ph: 7.1,
+        tds: 245,
+        distance: 16,
+        pump1: false,
+        pump2: false,
+        mode: "AUTO"
+      }, true);
+    }
+
+    function stopDemo() {
+      if (demoTimer) clearInterval(demoTimer);
+      demoTimer = null;
+      elements.demoButton.textContent = "Mulai Demo";
+      if (!mqttClient || !mqttClient.connected) {
+        setConnectionStatus("offline", "Terputus");
+      }
+    }
+
+    elements.connectButton.addEventListener("click", connectMqtt);
+    elements.disconnectButton.addEventListener("click", disconnectMqtt);
+    elements.demoButton.addEventListener("click", () => demoTimer ? stopDemo() : startDemo());
+    elements.saveConfigButton.addEventListener("click", saveConfig);
+    $("applySettingsButton").addEventListener("click", () => {
+      saveConfig();
+      updateDashboard(latestData, false);
+    });
+    $("sendSettingsButton").addEventListener("click", sendSettings);
+    $("autoButton").addEventListener("click", () => setMode("AUTO"));
+    $("manualButton").addEventListener("click", () => setMode("MANUAL"));
+    $("pump1OnButton").addEventListener("click", () => setPump(1, true));
+    $("pump1OffButton").addEventListener("click", () => setPump(1, false));
+    $("pump2OnButton").addEventListener("click", () => setPump(2, true));
+    $("pump2OffButton").addEventListener("click", () => setPump(2, false));
+    $("exportButton").addEventListener("click", exportCsv);
+    $("clearHistoryButton").addEventListener("click", clearHistory);
+
+    window.addEventListener("beforeunload", () => {
+      if (mqttClient) mqttClient.end(true);
+      if (demoTimer) clearInterval(demoTimer);
+    });
+
+    restoreConfig();
+    applyAutomaticMqttConfig();
+    renderHistory();
+    updateDashboard(latestData, false);
+
+    if (AUTO_MQTT_CONFIG.autoConnect) {
+      window.setTimeout(() => {
+        if (automaticConfigIsReady()) {
+          connectMqtt();
+        } else {
+          setConnectionStatus("error", "Konfigurasi belum diisi");
+          setMessage(
+            "Buka index.html lalu isi AUTO_MQTT_CONFIG sebelum deploy.",
+            "error"
+          );
+        }
+      }, 700);
+    }
+  </script>
+</body>
+</html>
